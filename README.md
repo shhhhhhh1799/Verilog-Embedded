@@ -45,7 +45,7 @@
 Control Unit(CU), 버튼 디바운싱, CLOCK, SR04, DHT11, FIFO, FND Controller 등이 실제로 연결된 구조를 시각적으로 확인할 수 있습니다.  
 
 <p align="center">
-  <img src="https://https://github.com/shhhhhhh1799/Image/blob/main/Top.png" alt="RTL Schematic" width="900"/>
+  <img src="https://github.com/shhhhhhh1799/Image/blob/main/Top.png" alt="RTL Schematic" width="900"/>
 </p>
 
 ---
