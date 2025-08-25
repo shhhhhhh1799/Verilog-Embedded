@@ -143,7 +143,7 @@ Control Unit(CU), 버튼 디바운싱, CLOCK, SR04, DHT11, FIFO, FND Controller 
 거리 계산 결과가 **HEX 변환 → UART 송신 → FND 표시** 흐름으로 연결되는 구조를 보여줍니다.  
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shhhhhhh1799/portfolio/shhhhhhh1799-image/HC-SR04.png" alt="HC-SR04 RTL Schematic" width="900"/>
+  <img src="https://github.com/shhhhhhh1799/Image/blob/main/HC-SR04.png" alt="RTL Schematic" width="900"/>
 </p>
 
 ### 🧪 UART 출력 예시
@@ -180,7 +180,7 @@ DHT11 센서에서 수집한 **온도/습도 데이터**가 FSM 기반 컨트롤
 이 값이 **HEX 변환 → UART 송신 → FND 표시** 흐름으로 전달되는 구조를 보여줍니다.  
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shhhhhhh1799/portfolio/shhhhhhh1799-image/DHT11.png" alt="DHT11 RTL Schematic" width="900"/>
+  <img src="https://github.com/shhhhhhh1799/Image/blob/main/DHT11.png" alt="RTL Schematic" width="900"/>
 </p>
 
 ### 🧪 UART 출력 메시지 예시
@@ -228,7 +228,7 @@ FPGA 보드와 송·수신 테스트를 진행한 화면입니다.
 FPGA 내부 모듈을 제어할 수 있습니다.  
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shhhhhhh1799/portfolio/shhhhhhh1799-image/Uart_example.png" alt="UART Example" width="900"/>
+  <img src="https://github.com/shhhhhhh1799/Image/blob/main/Uart_example.png" alt="RTL Schematic" width="900"/>
 </p>
 
 ---
