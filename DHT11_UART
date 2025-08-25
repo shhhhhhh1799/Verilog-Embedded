@@ -1,0 +1,791 @@
+`timescale 1ns / 1ps
+
+module top_dht11_uart(
+    input clk,
+    input rst,
+    input rx,
+    output tx,
+    output [7:0] fnd_data,
+    output [3:0] fnd_com,
+    output [3:0] state_led,
+    output LED,
+    inout dht11_io
+);
+    wire [7:0] w_t_data, w_rh_data;
+    wire w_dht11_valid;
+
+    // UART RX
+    wire [7:0] rx_data;
+    wire rx_valid;
+    wire pop_rx;
+
+    // UART Trigger FSM: "s" -> start 신호 발생
+    reg uart_start;
+    reg prev_rx_valid;
+    reg uart_triggered;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            uart_start <= 0;
+            prev_rx_valid <= 0;
+            uart_triggered <= 0;
+        end else begin
+            prev_rx_valid <= rx_valid;
+
+            if (rx_valid && !prev_rx_valid && rx_data == "s" && !uart_triggered) begin
+                uart_start <= 1;
+                uart_triggered <= 1;
+            end else begin
+                uart_start <= 0;
+            end
+
+            if (w_dht11_valid)
+                uart_triggered <= 0;
+        end
+    end
+
+    // 측정 유효 표시용 LED
+    assign LED = w_dht11_valid;
+
+    dht11_controller U_DHT11 (
+        .clk(clk),
+        .rst(rst),
+        .start(uart_start),
+        .rh_data(w_rh_data),
+        .t_data(w_t_data),
+        .dht11_done(),
+        .dht11_valid(w_dht11_valid),
+        .state_led(state_led),
+        .dht11_io(dht11_io)
+    );
+
+    fnd_controller U_FND(
+        .clk(clk),
+        .rst(rst),
+        .rh_data(w_rh_data),
+        .t_data(w_t_data),
+        .fnd_data(fnd_data),
+        .fnd_com(fnd_com)
+    );
+
+    // HEX to ASCII
+    wire [7:0] ascii_T0, ascii_T1, ascii_RH0, ascii_RH1;
+    wire ascii_valid;
+
+    dht11_hex_to_ascii U_HEX_ASCII (
+        .clk(clk),
+        .rst(rst),
+        .valid_in(w_dht11_valid),
+        .t_data(w_t_data),
+        .rh_data(w_rh_data),
+        .ascii_valid(ascii_valid),
+        .ascii_T0(ascii_T0),
+        .ascii_T1(ascii_T1),
+        .ascii_RH0(ascii_RH0),
+        .ascii_RH1(ascii_RH1)
+    );
+
+    // UART TX FSM
+    wire [7:0] tx_din;
+    wire push_tx;
+    wire tx_busy;
+
+    dht11_uart_sender U_UART_SEND (
+        .clk(clk),
+        .rst(rst),
+        .ascii_valid(ascii_valid),
+        .ascii_T0(ascii_T0),
+        .ascii_T1(ascii_T1),
+        .ascii_RH0(ascii_RH0),
+        .ascii_RH1(ascii_RH1),
+        .tx_busy(tx_busy),
+        .tx_din(tx_din),
+        .push_tx(push_tx)
+    );
+
+    // UART Controller (TX + RX)
+    wire tx_done;
+
+    uart_controller U_UART (
+        .clk(clk),
+        .rst(rst),
+        .push_tx(push_tx),
+        .tx_din(tx_din),
+        .rx(rx),
+        .tx(tx),
+        .tx_busy(tx_busy),
+        .tx_done(tx_done),
+        .rx_data(rx_data),
+        .rx_valid(rx_valid),
+        .pop_rx(pop_rx)
+    );
+endmodule
+
+module dht11_controller (
+    input clk,
+    input rst,
+    input start,
+    output [7:0] rh_data,
+    output [7:0] t_data,
+    output dht11_done,
+    output dht11_valid, // checksum에 대한 신호
+    output [3:0] state_led,
+    inout dht11_io
+);
+    wire w_tick;
+
+    tick_gen_10us U_Tick (
+        .clk(clk),
+        .rst(rst),
+        .o_tick(w_tick)
+    );
+
+    parameter IDLE = 0, START = 1, WAIT = 2, SYNC_L = 3, SYNC_H = 4, DATA_SYNC = 5, DATA_DETECT = 6, VALID = 7, DATA_DETECT_f = 8, STOP = 9;
+
+    reg [3:0] c_state, n_state;
+    reg [$clog2(1900)-1:0] tick_cnt_reg, tick_cnt_next;
+    reg dht11_reg, dht11_next;
+    reg io_en_reg, io_en_next;
+    reg [39:0] data_reg, data_next;
+    reg [$clog2(40)-1:0] data_cnt_reg, data_cnt_next;
+
+    reg dht11_done_reg, dht11_done_next;
+    reg dht11_valid_reg, dht11_valid_next;
+    reg w_tick_d, dht11_io_d, tick_edge_r, dht11_io_r, dht11_io_f;// rising edge
+
+    assign dht11_io = (io_en_reg) ? dht11_reg : 1'bz;  //출력인 경우
+    assign state_led = c_state;
+    assign dht11_valid = dht11_valid_reg;
+    assign dht11_done = dht11_done_reg;
+    
+    assign rh_data = data_reg[23:16];//습도 => dht11_done 신호 나올때 받으면 됨.
+    assign t_data = data_reg[39:32];//온도 => dht11_done 신호 나올때 받으면 됨.
+
+    always @(posedge clk, posedge rst) begin
+        if (rst) begin
+            c_state         <= IDLE;
+            tick_cnt_reg    <= 0;
+            dht11_reg       <= 1;  // 초기값 항상 high로
+            io_en_reg       <= 1;  // idle에서 항상 출력 모드
+            data_reg        <= 0;
+            data_cnt_reg    <= 39;
+            dht11_valid_reg <= 0;
+            w_tick_d        <= 0;
+            dht11_io_d      <= 0;
+            dht11_done_reg  <= 0;
+            dht11_valid_reg <= 0;
+
+        end else begin
+            c_state         <= n_state;
+            tick_cnt_reg    <= tick_cnt_next;
+            dht11_reg       <= dht11_next;
+            io_en_reg       <= io_en_next;
+            data_reg        <= data_next;
+            data_cnt_reg    <= data_cnt_next;
+
+            dht11_valid_reg <= dht11_valid_next;
+            dht11_done_reg  <= (dht11_done_reg)?0:dht11_done_next;
+
+            w_tick_d        <= w_tick;
+            tick_edge_r     <= (tick_edge_r)? 0: (~w_tick_d & w_tick);// tick rising edge
+
+            dht11_io_d      <= dht11_io;
+            dht11_io_r      <= (dht11_io_r)? 0: (~dht11_io_d & dht11_io);// io rising edge
+            dht11_io_f      <= (dht11_io_f)? 0: (dht11_io_d & ~dht11_io);// io falling edge
+        end
+    end
+
+    always @(*) begin
+        n_state          = c_state;
+        tick_cnt_next    = tick_cnt_reg;
+        dht11_next       = dht11_reg;
+        io_en_next       = io_en_reg;
+        data_next        = data_reg;
+        dht11_valid_next = dht11_valid_reg;
+        dht11_done_next  = dht11_done_reg;
+        data_cnt_next    = data_cnt_reg;
+
+        case (c_state)
+            IDLE: begin // 0
+                dht11_next = 1;
+                io_en_next = 1;//출력모드
+                if (start) begin
+                    n_state = START;
+                    dht11_valid_next = 0;//valid
+                end
+            end
+            START: begin // 1
+                if (w_tick) begin
+                    // 카운트
+                    dht11_next = 0;
+                    if (tick_cnt_reg == 1900) begin
+                        n_state       = WAIT;
+                        tick_cnt_next = 0;
+                    end else begin
+                        tick_cnt_next = tick_cnt_reg + 1;
+                    end
+                end
+            end
+            WAIT: begin // 2
+                dht11_next = 1;
+                if (w_tick) begin
+                    if (tick_cnt_reg == 2) begin
+                        n_state       = SYNC_L;
+                        tick_cnt_next = 0;
+                        io_en_next    = 0; // input 모드
+                    end else begin
+                        tick_cnt_next = tick_cnt_reg + 1;
+                    end
+                end
+            end
+            SYNC_L: begin // 3
+                if (w_tick & dht11_io) begin
+                    n_state = SYNC_H;
+                end
+            end
+            SYNC_H: begin // 4
+                if (w_tick & !dht11_io) begin
+                    n_state = DATA_SYNC;
+                    tick_cnt_next = 0;
+                end
+            end
+            DATA_SYNC: begin // 5 
+                if (w_tick) begin
+                    if (dht11_io) begin
+                        n_state       = DATA_DETECT;
+                        dht11_next    = 0;
+                        tick_cnt_next = 0;
+                    end
+                end
+            end
+            DATA_DETECT: begin  // 6
+                if (dht11_io & tick_edge_r) begin  // tick이 rising edge일 때
+                    tick_cnt_next = tick_cnt_reg + 1;  // 증가
+                end
+                if (dht11_io_f) begin  // input: falling edge일 때
+                    n_state = DATA_DETECT_f;
+                end
+            end
+            VALID: begin
+                if(data_reg[39:32] + data_reg[31:24] + data_reg[23:16] + data_reg[15:8] == data_reg[7:0]) begin
+                    dht11_valid_next = 1;
+                end else begin
+                    dht11_valid_next = 0;
+                end
+                n_state = STOP;
+            end
+            DATA_DETECT_f: begin
+                if (tick_cnt_reg >= 5) begin  // 1인 경우
+                    data_next[data_cnt_reg] = 1;
+                end else begin  // 0인 경우
+                    data_next[data_cnt_reg] = 0;
+                end
+                
+                if (data_cnt_reg == 0) begin
+                    tick_cnt_next = 0;
+                    data_cnt_next = 39;
+                    dht11_done_next = 1;  //done
+                    n_state = VALID;
+                end else begin
+                    n_state = DATA_SYNC; // data_sync로 
+                    data_cnt_next = data_cnt_reg - 1;
+                end
+            end
+            STOP: begin
+                if (tick_edge_r) begin // rising edge
+                    tick_cnt_next = tick_cnt_reg + 1;
+                end
+                if(tick_cnt_reg == 4) begin
+                    n_state = IDLE;
+                end
+            end
+        endcase
+    end
+endmodule
+
+//10us 틱 발생기
+module tick_gen_10us (
+    input  clk,
+    input  rst,
+    output o_tick
+);
+    parameter F_CNT = 1000;
+    reg [$clog2(F_CNT) - 1:0] counter_reg;
+    reg tick_reg;
+
+    assign o_tick = tick_reg;
+
+    always @(posedge clk, posedge rst) begin
+        if (rst) begin
+            counter_reg <= 0;
+            tick_reg    <= 0;
+        end else begin
+            if (counter_reg == F_CNT - 1) begin
+                counter_reg <= 0;
+                tick_reg    <= 1;
+            end else begin
+                counter_reg <= counter_reg + 1;
+                tick_reg    <= 0;
+            end
+        end
+    end
+endmodule
+
+module dht11_hex_to_ascii (
+    input        clk,
+    input        rst,
+    input        valid_in,         
+    input  [7:0] t_data,           // 온도
+    input  [7:0] rh_data,          // 습도
+    output reg        ascii_valid,
+    output reg [7:0]  ascii_T0,    // 온도 일의 자리
+    output reg [7:0]  ascii_T1,    // 온도 십의 자리
+    output reg [7:0]  ascii_RH0,   // 습도 일의 자리
+    output reg [7:0]  ascii_RH1    // 습도 십의 자리
+);
+    reg [3:0] t1, t0, h1, h0;
+    reg prev_valid;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            ascii_valid <= 0;
+            ascii_T0 <= 0;
+            ascii_T1 <= 0;
+            ascii_RH0 <= 0;
+            ascii_RH1 <= 0;
+            prev_valid <= 0;
+        end else begin
+            prev_valid <= valid_in;
+            if (valid_in && !prev_valid) begin
+                t0 <= t_data % 10;
+                t1 <= (t_data / 10) % 10;
+                h0 <= rh_data % 10;
+                h1 <= (rh_data / 10) % 10;
+
+                ascii_T0 <= 8'h30 + (t_data % 10);
+                ascii_T1 <= 8'h30 + ((t_data / 10) % 10);
+                ascii_RH0 <= 8'h30 + (rh_data % 10);
+                ascii_RH1 <= 8'h30 + ((rh_data / 10) % 10);
+
+                ascii_valid <= 1;
+            end else begin
+                ascii_valid <= 0; 
+            end
+        end
+    end
+
+endmodule
+
+module uart_controller (
+    input        clk,
+    input        rst,
+    input        push_tx,        
+    input  [7:0] tx_din,         
+    input        rx,            
+
+    output       tx,             
+    output       tx_busy,        
+    output       tx_done,        
+
+    input        pop_rx,         
+    output [7:0] rx_data,        
+    output       rx_valid        
+);
+
+    // 내부 신호
+    wire w_bd_tick;
+    wire w_tx_full, w_tx_empty;
+    wire w_rx_full, w_rx_empty;
+    wire [7:0] w_tx_data;
+    wire [7:0] w_rx_data_in;
+    wire [7:0] w_rx_data_out;
+    wire w_tx_start;
+    wire w_rx_done;
+    wire w_tx_busy, w_tx_done;
+
+    assign tx_busy   = w_tx_busy;
+    assign tx_done   = w_tx_done;
+    assign rx_data   = w_rx_data_out;
+    assign rx_valid  = ~w_rx_empty;
+
+    //----------------------------------
+    // TX FIFO
+    //----------------------------------
+    reg tx_pop;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            tx_pop <= 0;
+        else if (w_tx_done)
+            tx_pop <= 1;
+        else
+            tx_pop <= 0;
+    end
+
+    fifo U_FIFO_TX (
+        .clk       (clk),
+        .rst       (rst),
+        .push      (push_tx),
+        .pop       (tx_pop),
+        .push_data (tx_din),
+        .full      (w_tx_full),
+        .empty     (w_tx_empty),
+        .pop_data  (w_tx_data)
+    );
+
+    assign w_tx_start = ~w_tx_empty;
+
+    //----------------------------------
+    // RX FIFO
+    //----------------------------------
+    fifo U_FIFO_RX (
+        .clk       (clk),
+        .rst       (rst),
+        .push      (w_rx_done),
+        .pop       (pop_rx),
+        .push_data (w_rx_data_in),
+        .full      (w_rx_full),
+        .empty     (w_rx_empty),
+        .pop_data  (w_rx_data_out)
+    );
+
+    //----------------------------------
+    // UART TX
+    //----------------------------------
+    uart_tx U_UART_TX (
+        .clk         (clk),
+        .rst         (rst),
+        .baud_tick   (w_bd_tick),
+        .start       (w_tx_start),
+        .din         (w_tx_data),
+        .o_tx_done   (w_tx_done),
+        .o_tx_busy   (w_tx_busy),
+        .o_tx        (tx)
+    );
+
+    //----------------------------------
+    // UART RX
+    //----------------------------------
+    uart_rx U_UART_RX (
+        .clk       (clk),
+        .rst       (rst),
+        .b_tick    (w_bd_tick),
+        .rx        (rx),
+        .o_dout    (w_rx_data_in),
+        .o_rx_done (w_rx_done)
+    );
+
+    //----------------------------------
+    // Baudrate Generator
+    //----------------------------------
+    baudrate U_BR (
+        .clk       (clk),
+        .rst       (rst),
+        .baud_tick (w_bd_tick)
+    );
+
+endmodule
+
+module fnd_controller (
+    input clk,
+    input rst,
+    input [7:0] rh_data,
+    input [7:0] t_data,
+    output [7:0] fnd_data,
+    output [3:0] fnd_com
+);
+    wire [3:0] rh_10, rh_1, t_10, t_1;
+    wire [1:0] fnd_sel;
+    wire [3:0] bcd;
+    wire clk_div;
+
+    // Digit split
+    digit_splitter #(.BIT_WIDTH(8)) U_DS_RH (
+        .time_data(rh_data),
+        .disit_1(rh_1),
+        .disit_10(rh_10)
+    );
+
+    digit_splitter #(.BIT_WIDTH(8)) U_DS_T (
+        .time_data(t_data),
+        .disit_1(t_1),
+        .disit_10(t_10)
+    );
+
+    // Clock divider for FND scan (e.g., ~500Hz)
+    clk_div_1 U_CLK_DIV (
+        .clk(clk),
+        .rst(rst),
+        .o_clk(clk_div)
+    );
+
+    // 2-bit counter (0~3) using divided clock
+    counter_4 U_CNT (
+        .clk(clk_div),
+        .rst(rst),
+        .fnd_sel(fnd_sel)
+    );
+
+    // FND 자리 선택
+    decoder_2x4 U_DEC (
+        .fnd_sel(fnd_sel),
+        .fnd_com(fnd_com)
+    );
+
+    // Digit 선택 MUX
+    MUX_4x1 U_MUX (
+        .sel(fnd_sel),
+        .disit_1(t_1),
+        .disit_10(t_10),
+        .disit_100(rh_1),
+        .disit_1000(rh_10),
+        .bcd(bcd)
+    );
+
+    // BCD → 7-segment 변환
+    BCD U_BCD (
+        .bcd(bcd),
+        .fnd_data(fnd_data)
+    );
+endmodule
+
+// ===== Clock Divider (e.g., 100MHz → ~500Hz) =====
+module clk_div_1 (
+    input clk,
+    input rst,
+    output o_clk
+);
+    reg [$clog2(100_000) - 1:0] r_counter;
+    reg r_clk;
+    assign o_clk = r_clk;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            r_counter <= 0;
+            r_clk <= 1'b0;
+        end else begin
+            if (r_counter == 100_000 - 1) begin
+                r_counter <= 0;
+                r_clk <= ~r_clk;
+            end else begin
+                r_counter <= r_counter + 1;
+            end
+        end
+    end
+endmodule
+
+// ===== 4진 카운터 (0~3) =====
+module counter_4 (
+    input clk,
+    input rst,
+    output [1:0] fnd_sel
+);
+    reg [1:0] r_counter;
+    assign fnd_sel = r_counter;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            r_counter <= 0;
+        else
+            r_counter <= r_counter + 1;
+    end
+endmodule
+
+// ===== 2-to-4 디코더 (공통 단자 선택) =====
+module decoder_2x4 (
+    input [1:0] fnd_sel,
+    output reg [3:0] fnd_com
+);
+    always @(*) begin
+        case (fnd_sel)
+            2'b00: fnd_com = 4'b1110; // FND0
+            2'b01: fnd_com = 4'b1101; // FND1
+            2'b10: fnd_com = 4'b1011; // FND2
+            2'b11: fnd_com = 4'b0111; // FND3
+            default: fnd_com = 4'b1111;
+        endcase
+    end
+endmodule
+
+// ===== Digit 선택 MUX =====
+module MUX_4x1 (
+    input [1:0] sel,
+    input [3:0] disit_1,
+    input [3:0] disit_10,
+    input [3:0] disit_100,
+    input [3:0] disit_1000,
+    output reg [3:0] bcd
+);
+    always @(*) begin
+        case (sel)
+            2'b00: bcd = disit_1;      // FND0 ← t_1
+            2'b01: bcd = disit_10;     // FND1 ← t_10
+            2'b10: bcd = disit_100;    // FND2 ← rh_1
+            2'b11: bcd = disit_1000;   // FND3 ← rh_10
+        endcase
+    end
+endmodule
+
+// ===== BCD to 7-segment =====
+module BCD (
+    input [3:0] bcd,
+    output reg [7:0] fnd_data
+);
+    always @(*) begin
+        case (bcd)
+            4'h0: fnd_data = 8'hc0;
+            4'h1: fnd_data = 8'hf9;
+            4'h2: fnd_data = 8'ha4;
+            4'h3: fnd_data = 8'hb0;
+            4'h4: fnd_data = 8'h99;
+            4'h5: fnd_data = 8'h92;
+            4'h6: fnd_data = 8'h82;
+            4'h7: fnd_data = 8'hf8;
+            4'h8: fnd_data = 8'h80;
+            4'h9: fnd_data = 8'h90;
+            default: fnd_data = 8'hff; // 모든 segment off
+        endcase
+    end
+endmodule
+
+// ===== Digit Splitter =====
+module digit_splitter #(
+    parameter BIT_WIDTH = 8
+) (
+    input [BIT_WIDTH - 1:0] time_data,
+    output [3:0] disit_1,
+    output [3:0] disit_10
+);
+    assign disit_1 = time_data % 10;
+    assign disit_10 = (time_data / 10) % 10;
+endmodule
+
+module dht11_uart_sender (
+    input clk,
+    input rst,
+    input ascii_valid,
+    input [7:0] ascii_T0,
+    input [7:0] ascii_T1,
+    input [7:0] ascii_RH0,
+    input [7:0] ascii_RH1,
+    input tx_busy,
+
+    output reg [7:0] tx_din,
+    output reg push_tx
+);
+
+    reg [4:0] index;
+    reg sending;
+    reg [7:0] msg[0:23];  // "Temp = XXC\r\nHumi = XX%\r\n"
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            index   <= 0;
+            tx_din  <= 0;
+            push_tx <= 0;
+            sending <= 0;
+        end else begin
+            push_tx <= 0;
+
+            if (ascii_valid && !sending) begin
+                // 메시지 구성
+                msg[0]  <= "T";
+                msg[1]  <= "e";
+                msg[2]  <= "m";
+                msg[3]  <= "p";
+                msg[4]  <= " ";
+                msg[5]  <= "=";
+                msg[6]  <= " ";
+                msg[7]  <= ascii_RH1;
+                msg[8]  <= ascii_RH0;
+                msg[9]  <= "C";
+                msg[10] <= 8'h0D;
+                msg[11] <= 8'h0A;
+                msg[12] <= "H";
+                msg[13] <= "u";
+                msg[14] <= "m";
+                msg[15] <= "i";
+                msg[16] <= " ";
+                msg[17] <= "=";
+                msg[18] <= " ";
+                msg[19] <= ascii_T1;
+                msg[20] <= ascii_T0;
+                msg[21] <= "%";
+                msg[22] <= 8'h0D;
+                msg[23] <= 8'h0A;
+                sending <= 1;
+                index   <= 0;
+            end else if (sending && !tx_busy) begin
+                tx_din  <= msg[index];
+                push_tx <= 1;
+                index   <= index + 1;
+
+                if (index == 23) begin
+                    sending <= 0;
+                end
+            end
+        end
+    end
+
+endmodule
+
+module btn_debounce #(
+    parameter N = 8,
+    parameter F_COUNT = 10000
+    ) (
+    input clk,
+    input rst,
+    input i_btn,
+    output o_btn
+    );
+
+    // 10kHz r_tick 생성, 일반적으로는 1kHz를 많이 사용하기는 함.
+    reg [$clog2(F_COUNT)-1:0] r_counter;
+    reg r_tick;
+
+    always @(posedge clk, posedge rst) begin
+        if (rst) begin
+            r_counter <= 0;
+            r_tick <= 0;
+        end
+        else begin
+            if (r_counter == (F_COUNT -1)) begin
+                r_counter <= 0;
+                r_tick <= 1;
+            end
+            else begin
+                r_counter <= r_counter + 1;
+                r_tick <= 0;
+            end
+        end
+    end
+
+    // Debounce 처리
+    reg [N-1:0] shift;
+    wire w_debounce;
+
+    always @(posedge r_tick, posedge rst) begin
+        if (rst) begin
+            shift <= 0;
+        end
+        else begin
+            shift <= {shift[N-2:0], i_btn};
+        end
+    end
+
+    assign w_debounce = &shift;
+
+    // Edge detector
+    reg r_btn_prev;
+    
+    always @(posedge clk, posedge rst) begin
+        if (rst) begin
+            r_btn_prev <= 0;
+        end
+        else begin
+            r_btn_prev <= w_debounce;
+        end
+    end
+
+    assign o_btn = (~r_btn_prev) & w_debounce;
+endmodule
