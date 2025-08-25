@@ -81,7 +81,7 @@ Control Unit(CU), 버튼 디바운싱, CLOCK, SR04, DHT11, FIFO, FND Controller 
 시/분/초 설정 및 증가·감소 신호가 `STOPWATCH/Watch DP` 모듈로 연결되어 FND에 출력되는 구조를 보여줍니다.  
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shhhhhhh1799/portfolio/shhhhhhh1799-image/Watch.png" alt="Watch RTL Schematic" width="900"/>
+  <img src="Image/Watch.png" alt="Watch RTL Schematic" width="900"/>
 </p>
 
 ### ✨ 특징
