@@ -1,4 +1,4 @@
-# 🔧 Verilog Embedded system Project
+# 🔧 Verilog Embedded System
 
 본 프로젝트는 **FPGA 기반 임베디드 시스템 설계**를 목표로 하여, **Verilog HDL**을 사용해 다양한 하드웨어 모듈을 직접 구현하고 이를 통합한 시스템입니다. 
 
