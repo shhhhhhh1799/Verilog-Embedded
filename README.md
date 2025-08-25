@@ -147,7 +147,9 @@ Control Unit(CU), 버튼 디바운싱, CLOCK, SR04, DHT11, FIFO, FND Controller 
 </p>
 
 ### 🧪 UART 출력 예시
+```
 거리(cm): 1.23
+```
 
 ---
 
