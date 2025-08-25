@@ -230,6 +230,7 @@ FPGA 내부 모듈을 제어할 수 있습니다.
 <p align="center">
   <img src="https://raw.githubusercontent.com/shhhhhhh1799/portfolio/shhhhhhh1799-image/Uart_example.png" alt="UART Example" width="900"/>
 </p>
+
 ---
 
 ## 🔚 마무리
@@ -241,4 +242,3 @@ FPGA 내부 모듈을 제어할 수 있습니다.
 
 ## 📹 시연 영상  
 👉 [블로그에서 시연 영상 보기](https://blog.naver.com/PostView.naver?blogId=sssssssh17&Redirect=View&logNo=223931104573&categoryNo=1&isAfterWrite=true&isMrblogPost=false&isHappyBeanLeverage=true&contentLength=3619)
-
