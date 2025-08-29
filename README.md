@@ -38,8 +38,6 @@
 
 ---
 
----
-
 ### 🧩 Top Schematic
 아래 그림은 Vivado에서 생성한 **Top-Level RTL Schematic**입니다.  
 Control Unit(CU), 버튼 디바운싱, CLOCK, SR04, DHT11, FIFO, FND Controller 등이 실제로 연결된 구조를 시각적으로 확인할 수 있습니다.  
